@@ -1081,7 +1081,7 @@ pub fn sprites_clear_of(out: &mut Vec<Sprite>, base: usize, view: [f32; 4], pad:
         if let Some(room) = pad {
             pen.view = right_of_the_stick(view, extent(&pen, |p, d| radar(p, shown, d)), room);
         }
-        let from = pen.pen.out.len();
+        let from = pen.out.len();
         radar(&mut pen, shown, &mut drawn);
         hitboxes[RADAR_PART] = sprite_bounds(&pen.out[from..]);
         pen.view = view;
