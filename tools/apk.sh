@@ -93,7 +93,7 @@ fetch() { # url sha256 → its path in the cache
 }
 aar=$(fetch https://github.com/rustls/rustls-platform-verifier/raw/maven-archive/android-release-support/maven/org/rustls/rustls-platform-verifier/$rpv/rustls-platform-verifier-$rpv.aar \
     aa021794230fbc2f0be355999e2cf67398dd563de066a2e17001ffbd0b69101b)
-kotlin=$(fetch https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-stdlib/2.2.10/kotlin-stdlib-2.2.10.jar \
+kotlin=$(fetch https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-stdlib/2.2.10/kotlin-stdlib-2.2.10.jar \
     9c67cc79efd6b9215b49d2a4308f5f3433537376c7c88e89bdd6729bd096e61a)
 rm -rf "$out/rpv"; mkdir -p "$out/rpv" "$res/xml"
 unzip -qo "$aar" classes.jar res/xml/network_security_config.xml -d "$out/rpv"
