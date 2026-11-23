@@ -1,0 +1,73 @@
+name: Android APK (cloud build)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - build/android-apk
+    paths:
+      - '.github/workflows/android-apk.yml'
+      - 'crates/**'
+      - 'third_party/**'
+      - 'tools/apk.sh'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'web/icon.svg'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Android ARM64 APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install image tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y imagemagick librsvg2-bin
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK and NDK
+        run: |
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add aarch64-linux-android
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+
+      - name: Build APK
+        env:
+          OPENMX_VERSION: 0.19.0
+        run: |
+          chmod +x tools/apk.sh
+          tools/apk.sh
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openmx-android-arm64
+          path: dist/openmx.apk
+          if-no-files-found: error
+          retention-days: 14
