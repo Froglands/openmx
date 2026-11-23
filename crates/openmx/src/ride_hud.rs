@@ -176,7 +176,12 @@ fn editor_overlay(out: &mut Vec<Sprite>, base: usize, view: [f32; 4], scale: f32
 }
 
 #[cfg(target_os = "android")]
-pub fn editor_touch(touch: crate::touch_pad::Touch, size: (f32, f32), safe: [f32; 4], frame_scale: f32) -> bool {
+pub fn editor_active() -> bool {
+    HUD_EDITOR.lock().unwrap_or_else(|p| p.into_inner()).active
+}
+
+#[cfg(target_os = "android")]
+pub fn editor_touch(touch: crate::touch_pad::Touch, _size: (f32, f32), safe: [f32; 4], frame_scale: f32) -> bool {
     use crate::touch_pad::Phase;
     let mut e = HUD_EDITOR.lock().unwrap_or_else(|p| p.into_inner());
     hud_layout_load(&mut e);
@@ -2072,7 +2077,7 @@ pub fn fps_line(frame: (f32, f32), scale: f32) -> [f32; 4] {
 /// every view's HUD, on the GPU and (by [`fps_draw`]) the software path alike.
 pub fn fps_sprites(out: &mut Vec<Sprite>, base: usize, view: [f32; 4], scale: f32, text: &str) -> Line {
     let s = scale_of(view[2], view[3], scale);
-    let mut pen = Pen { out, view, s, base, corner: Corner::TopRight, alpha: 1.0 };
+    let mut pen = Pen { out, view, s, base, corner: Corner::TopRight, alpha: 1.0, layout: HudLayout::default(), transform: HudTransform::NORMAL };
     let size = 1.1 * EM;
     let (right, base_y) = FPS_AT;
     let w = Pen::measure(Face::Words, Weight::Heavy, text, size);
