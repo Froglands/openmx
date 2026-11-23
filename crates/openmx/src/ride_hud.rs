@@ -1081,14 +1081,14 @@ pub fn sprites_clear_of(out: &mut Vec<Sprite>, base: usize, view: [f32; 4], pad:
         if let Some(room) = pad {
             pen.view = right_of_the_stick(view, extent(&pen, |p, d| radar(p, shown, d)), room);
         }
-        let from = pen.out.len();
+        let from = pen.pen.out.len();
         radar(&mut pen, shown, &mut drawn);
         hitboxes[RADAR_PART] = sprite_bounds(&pen.out[from..]);
         pen.view = view;
     }
-    let from = out.len();
+    let from = pen.out.len();
     score(&mut pen, shown, tracker, now, &mut drawn);
-    hitboxes[SCORE_PART] = sprite_bounds(&out[from..]);
+    hitboxes[SCORE_PART] = sprite_bounds(&pen.out[from..]);
     let mut below = None;
     if let Some(room) = pad {
         let meters = |k: f32| {
@@ -1109,19 +1109,19 @@ pub fn sprites_clear_of(out: &mut Vec<Sprite>, base: usize, view: [f32; 4], pad:
         [at[0] - r, at[1] - r, 2.0 * r, 2.0 * r]
     }));
     (pen.view, pen.s, pen.transform) = (view, s, HudTransform::NORMAL);
-    let from = out.len();
+    let from = pen.out.len();
     prompts(&mut pen, shown, &mut drawn);
-    hitboxes[PROMPTS_PART] = sprite_bounds(&out[from..]);
-    let from = out.len();
+    hitboxes[PROMPTS_PART] = sprite_bounds(&pen.out[from..]);
+    let from = pen.out.len();
     top_right(&mut pen, shown, tracker, now, below, &mut drawn);
-    hitboxes[INFO_PART] = sprite_bounds(&out[from..]);
+    hitboxes[INFO_PART] = sprite_bounds(&pen.out[from..]);
     if let Some(e) = &shown.event {
-        let from = out.len();
+        let from = pen.out.len();
         event(&mut pen, e, tracker, now, &mut drawn);
-        hitboxes[EVENT_PART] = sprite_bounds(&out[from..]);
+        hitboxes[EVENT_PART] = sprite_bounds(&pen.out[from..]);
     }
     if let Some(r) = &shown.race {
-        let from = out.len();
+        let from = pen.out.len();
         race(&mut pen, r, &mut drawn);
         if let Some((f, t)) = tracker.race_flag(now) {
             flag(&mut pen, f, t, &mut drawn);
@@ -1129,13 +1129,13 @@ pub fn sprites_clear_of(out: &mut Vec<Sprite>, base: usize, view: [f32; 4], pad:
         if let Some(up) = r.board {
             board(&mut pen, up, &mut drawn);
         }
-        hitboxes[RACE_PART] = sprite_bounds(&out[from..]);
+        hitboxes[RACE_PART] = sprite_bounds(&pen.out[from..]);
     }
     if let Some(p) = tracker.popup(now) {
-        let from = out.len();
+        let from = pen.out.len();
         let lines = trick(&mut pen, &p);
         drawn.trick = Some((p, lines));
-        hitboxes[TRICK_PART] = sprite_bounds(&out[from..]);
+        hitboxes[TRICK_PART] = sprite_bounds(&pen.out[from..]);
     }
     editor_overlay(&mut *pen.out, base, view, s, hitboxes);
     drawn
