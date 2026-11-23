@@ -80,6 +80,8 @@ struct HudEditor {
     buttons: [Box4; 5],
     view: [f32; 4],
     layout_scale: f32,
+    input_safe: [f32; 4],
+    input_scale: f32,
     captured: Option<u64>,
     drag: Option<(u64, [f32; 2], HudTransform)>,
 }
@@ -181,7 +183,14 @@ pub fn editor_active() -> bool {
 }
 
 #[cfg(target_os = "android")]
-pub fn editor_touch(touch: crate::touch_pad::Touch, _size: (f32, f32), safe: [f32; 4], frame_scale: f32) -> bool {
+pub fn editor_input_area(safe: [f32; 4], frame_scale: f32) {
+    let mut e = HUD_EDITOR.lock().unwrap_or_else(|p| p.into_inner());
+    e.input_safe = safe;
+    e.input_scale = frame_scale.max(0.1);
+}
+
+#[cfg(target_os = "android")]
+pub fn editor_touch(touch: crate::touch_pad::Touch) -> bool {
     use crate::touch_pad::Phase;
     let mut e = HUD_EDITOR.lock().unwrap_or_else(|p| p.into_inner());
     hud_layout_load(&mut e);
@@ -192,8 +201,8 @@ pub fn editor_touch(touch: crate::touch_pad::Touch, _size: (f32, f32), safe: [f3
         }
         if !e.active { return true; }
     }
-    let unit = frame_scale.max(0.1);
-    let at = [(touch.at.0 - safe[0]) / unit, (touch.at.1 - safe[1]) / unit];
+    let unit = e.input_scale.max(0.1);
+    let at = [(touch.at.0 - e.input_safe[0]) / unit, (touch.at.1 - e.input_safe[1]) / unit];
     if !e.active {
         if touch.phase == Phase::Down && inside(e.buttons[4], at) {
             e.active = true;
