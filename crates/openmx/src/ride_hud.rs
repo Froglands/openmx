@@ -212,6 +212,16 @@ fn editor_overlay(out: &mut Vec<Sprite>, base: usize, view: [f32; 4], scale: f32
     }
 }
 
+/// Enter the touch HUD editor from Settings > Display.
+pub fn editor_open() {
+    let mut e = HUD_EDITOR.lock().unwrap_or_else(|p| p.into_inner());
+    hud_layout_load(&mut e);
+    e.active = true;
+    e.selected = None;
+    e.drag = None;
+    e.captured = None;
+}
+
 #[cfg(target_os = "android")]
 pub fn editor_active() -> bool {
     HUD_EDITOR.lock().unwrap_or_else(|p| p.into_inner()).active
