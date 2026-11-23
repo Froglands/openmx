@@ -415,7 +415,7 @@ impl GpuWindow {
         let shown = touch.shown;
         drop(touch);
         // The ride HUD stands clear of the touch pad (P304), as on the iPhone.
-        crate::menu::touch_room::set((shown && !crate::ride_hud::editor_active()).then_some((self.width, self.height)));
+        crate::menu::touch_room::set(shown.then_some((self.width, self.height)));
         crate::ride_hud::editor_input_area(self.safe.map(|v| v as f32), self.scale.max(1) as f32);
     }
 
