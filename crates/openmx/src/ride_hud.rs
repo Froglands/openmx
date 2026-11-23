@@ -175,9 +175,6 @@ fn editor_overlay(out: &mut Vec<Sprite>, base: usize, view: [f32; 4], scale: f32
         }
     }
     if !e.active {
-        let b = [view[0] + view[2] / 2.0 - 54.0, view[1] + 8.0, 108.0, 31.0];
-        e.buttons[4] = b;
-        editor_button(out, base, b, "EDIT HUD", false, 14.0);
         return;
     }
     let widths = [62.0, 62.0, 58.0, 58.0, 62.0];
@@ -242,12 +239,6 @@ pub fn editor_touch(touch: crate::touch_pad::Touch) -> bool {
     let unit = e.input_scale.max(0.1);
     let at = [(touch.at.0 - e.input_safe[0]) / unit, (touch.at.1 - e.input_safe[1]) / unit];
     if !e.active {
-        if touch.phase == Phase::Down && inside(e.buttons[4], at) {
-            e.active = true;
-            e.captured = Some(touch.id);
-            e.selected = None;
-            return true;
-        }
         return false;
     }
     if touch.phase == Phase::Down {
