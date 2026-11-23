@@ -117,7 +117,7 @@ fn hud_layout_now() -> HudLayout {
 }
 
 fn sprite_bounds(sprites: &[Sprite]) -> Option<Box4> {
-    sprites.iter().flat_map(|s| s.corners).fold(None, |bounds, [x, y]| {
+    sprites.iter().flat_map(|s| s.corners).fold(None::<[f32; 4]>, |bounds, [x, y]| {
         Some(match bounds {
             None => [x, y, x, y],
             Some([l, t, r, b]) => [l.min(x), t.min(y), r.max(x), b.max(y)],
@@ -1081,9 +1081,9 @@ pub fn sprites_clear_of(out: &mut Vec<Sprite>, base: usize, view: [f32; 4], pad:
         if let Some(room) = pad {
             pen.view = right_of_the_stick(view, extent(&pen, |p, d| radar(p, shown, d)), room);
         }
-        let from = out.len();
+        let from = pen.out.len();
         radar(&mut pen, shown, &mut drawn);
-        hitboxes[RADAR_PART] = sprite_bounds(&out[from..]);
+        hitboxes[RADAR_PART] = sprite_bounds(&pen.out[from..]);
         pen.view = view;
     }
     let from = out.len();
@@ -1104,7 +1104,7 @@ pub fn sprites_clear_of(out: &mut Vec<Sprite>, base: usize, view: [f32; 4], pad:
     }
     speedometer(&mut pen, shown, &mut drawn);
     hitboxes[PRELOAD_PART] = drawn.meter;
-    hitboxes[SPEED_PART] = drawn.speed.map(|l| l.rect).or_else(|| drawn.dial.map(|(at, _, _)| {
+    hitboxes[SPEED_PART] = drawn.speed.as_ref().map(|l| l.rect).or_else(|| drawn.dial.as_ref().map(|(at, _, _)| {
         let r = 100.0 * s * layout.parts[SPEED_PART].scale as f32 / 100.0;
         [at[0] - r, at[1] - r, 2.0 * r, 2.0 * r]
     }));
@@ -1137,7 +1137,7 @@ pub fn sprites_clear_of(out: &mut Vec<Sprite>, base: usize, view: [f32; 4], pad:
         drawn.trick = Some((p, lines));
         hitboxes[TRICK_PART] = sprite_bounds(&out[from..]);
     }
-    editor_overlay(out, base, view, s, hitboxes);
+    editor_overlay(&mut *pen.out, base, view, s, hitboxes);
     drawn
 }
 
