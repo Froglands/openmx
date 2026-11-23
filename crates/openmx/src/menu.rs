@@ -4836,7 +4836,8 @@ impl Menu {
 
     /// Close the settings/pause stack and enter the Android touch HUD editor over the live ride.
     pub(super) fn open_hud_editor(&mut self) {
-        self.stack.clear();
+        // Keep the pause stack: it holds the live ride still while the editor is open.
+        // Rendering hides the pause panel separately, leaving the game frame underneath.
         crate::ride_hud::editor_open();
     }
 
