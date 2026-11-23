@@ -148,6 +148,8 @@ pub enum Key {
     Speedometer,
     Minimap,
     HudScale,
+    #[cfg(target_os = "android")]
+    HudEditor,
     DrawDistance,
     WorldSky,
     TextureFiltering,
@@ -778,6 +780,8 @@ impl Menu {
                 "The size of the whole HUD, each piece in its own corner. 100% is the original's.",
             )
             .off_if(s.overlay == Overlay::None, "The HUD is off"),
+            #[cfg(target_os = "android")]
+            Row::action(Key::HudEditor, "Edit HUD", "Move and resize each HUD element while the gameplay touch controls remain visible."),
             // P176: opentennis's Aspect Ratio, the Picture departure's switch.
             Row::choice(Key::AspectRatio, "Aspect Ratio", &Picture::ALL.map(Picture::label), at(&Picture::ALL, s.picture), ASPECT_HELP),
             // P281: opentennis's Button Icons, Auto by default.
@@ -2015,6 +2019,11 @@ impl Menu {
             }
             Key::OriginalPage if p.ok => {
                 self.open_original();
+                return;
+            }
+            #[cfg(target_os = "android")]
+            Key::HudEditor if p.ok => {
+                self.open_hud_editor();
                 return;
             }
             Key::Store if p.ok => {
