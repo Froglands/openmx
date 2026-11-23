@@ -33,6 +33,212 @@ use std::time::Duration;
 
 use crate::clock::Instant;
 
+// ---- touch HUD editor ---------------------------------------------------------------------------
+
+const HUD_PARTS: usize = 9;
+const SCORE_PART: usize = 0;
+const RADAR_PART: usize = 1;
+const SPEED_PART: usize = 2;
+const PRELOAD_PART: usize = 3;
+const PROMPTS_PART: usize = 4;
+const INFO_PART: usize = 5;
+const EVENT_PART: usize = 6;
+const RACE_PART: usize = 7;
+const TRICK_PART: usize = 8;
+const HUD_PART_NAMES: [&str; HUD_PARTS] = ["Score", "Radar", "Speed", "Preload", "Prompts", "Info", "Event", "Race", "Trick"];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct HudTransform {
+    x: i16,
+    y: i16,
+    scale: u8,
+}
+
+impl HudTransform {
+    const NORMAL: Self = Self { x: 0, y: 0, scale: 100 };
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct HudLayout {
+    parts: [HudTransform; HUD_PARTS],
+}
+
+impl Default for HudLayout {
+    fn default() -> Self {
+        Self { parts: [HudTransform::NORMAL; HUD_PARTS] }
+    }
+}
+
+#[derive(Default)]
+struct HudEditor {
+    loaded: bool,
+    active: bool,
+    layout: HudLayout,
+    selected: Option<usize>,
+    hitboxes: [Option<Box4>; HUD_PARTS],
+    /// Save, Reset, Size -, Size +, Done; Edit HUD while closed.
+    buttons: [Box4; 5],
+    view: [f32; 4],
+    layout_scale: f32,
+    captured: Option<u64>,
+    drag: Option<(u64, [f32; 2], HudTransform)>,
+}
+
+static HUD_EDITOR: LazyLock<Mutex<HudEditor>> = LazyLock::new(|| Mutex::new(HudEditor::default()));
+
+fn hud_layout_load(e: &mut HudEditor) {
+    if e.loaded { return; }
+    e.loaded = true;
+    let Ok(text) = std::fs::read_to_string("hud-layout.txt") else { return };
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once('=') else { continue };
+        let Some(index) = HUD_PART_NAMES.iter().position(|n| n.eq_ignore_ascii_case(key.trim())) else { continue };
+        let mut values = value.trim().split(',').map(str::trim);
+        let (Some(x), Some(y), Some(scale)) = (values.next(), values.next(), values.next()) else { continue };
+        let (Ok(x), Ok(y), Ok(scale)) = (x.parse::<i16>(), y.parse::<i16>(), scale.parse::<u8>()) else { continue };
+        e.layout.parts[index] = HudTransform { x: x.clamp(-640, 640), y: y.clamp(-448, 448), scale: scale.clamp(50, 200) };
+    }
+}
+
+fn hud_layout_save(layout: HudLayout) -> Result<(), String> {
+    let mut text = String::from("# openMX HUD layout; offsets are logical layout pixels\n");
+    for (name, part) in HUD_PART_NAMES.iter().zip(layout.parts) {
+        text.push_str(&format!("{name} = {},{},{}\n", part.x, part.y, part.scale));
+    }
+    std::fs::write("hud-layout.txt", text).map_err(|e| format!("could not save hud-layout.txt: {e}"))
+}
+
+fn hud_layout_now() -> HudLayout {
+    let mut e = HUD_EDITOR.lock().unwrap_or_else(|p| p.into_inner());
+    hud_layout_load(&mut e);
+    e.layout
+}
+
+fn sprite_bounds(sprites: &[Sprite]) -> Option<Box4> {
+    sprites.iter().flat_map(|s| s.corners).fold(None, |bounds, [x, y]| {
+        Some(match bounds {
+            None => [x, y, x, y],
+            Some([l, t, r, b]) => [l.min(x), t.min(y), r.max(x), b.max(y)],
+        })
+    }).map(|[l, t, r, b]| [l, t, r - l, b - t])
+}
+
+fn inside(b: Box4, p: [f32; 2]) -> bool {
+    p[0] >= b[0] && p[0] <= b[0] + b[2] && p[1] >= b[1] && p[1] <= b[1] + b[3]
+}
+
+fn editor_button(out: &mut Vec<Sprite>, base: usize, rect: Box4, label: &str) {
+    let fill = [12, 14, 18, 220];
+    ink::round(out, rect, 7.0, fill, fill);
+    ink::ring(out, rect, 7.0, 1.5, [245, 245, 245, 220]);
+    let face = ink::ink();
+    let size = 14.0;
+    let width = face.measure(Weight::Heavy, label, size);
+    let cx = rect[0] + rect[2] / 2.0;
+    let cy = rect[1] + rect[3] / 2.0;
+    let baseline = cy + size * (face.ascent - face.descent.abs()) / 2.0;
+    face.text(out, base, Weight::Heavy, label, cx - width / 2.0, baseline, size, 0.0, WHITE);
+}
+
+fn editor_overlay(out: &mut Vec<Sprite>, base: usize, view: [f32; 4], scale: f32, hitboxes: [Option<Box4>; HUD_PARTS]) {
+    let mut e = HUD_EDITOR.lock().unwrap_or_else(|p| p.into_inner());
+    hud_layout_load(&mut e);
+    e.hitboxes = hitboxes;
+    e.view = view;
+    e.layout_scale = scale.max(0.1);
+    if !e.active {
+        let b = [view[0] + view[2] / 2.0 - 54.0, view[1] + 8.0, 108.0, 31.0];
+        e.buttons[4] = b;
+        editor_button(out, base, b, "EDIT HUD");
+        return;
+    }
+    let widths = [62.0, 62.0, 58.0, 58.0, 62.0];
+    let gap = 5.0;
+    let total = widths.iter().sum::<f32>() + gap * 4.0;
+    let mut x = view[0] + (view[2] - total) / 2.0;
+    let y = view[1] + 8.0;
+    let labels = ["SAVE", "RESET", "SIZE -", "SIZE +", "DONE"];
+    for i in 0..5 {
+        let b = [x, y, widths[i], 32.0];
+        e.buttons[i] = b;
+        editor_button(out, base, b, labels[i]);
+        x += widths[i] + gap;
+    }
+    if let Some(index) = e.selected {
+        if let Some([x, y, w, h]) = e.hitboxes[index] {
+            ink::ring(out, [x - 5.0, y - 5.0, w + 10.0, h + 10.0], 5.0, 2.5, [255, 177, 54, 245]);
+        }
+        let part = e.layout.parts[index];
+        let label = format!("{}  {}%", HUD_PART_NAMES[index], part.scale);
+        let face = ink::ink();
+        face.text(out, base, Weight::Heavy, &label, view[0] + 12.0, y + 23.0, 13.0, 0.0, WHITE);
+    }
+}
+
+#[cfg(target_os = "android")]
+pub fn editor_touch(touch: crate::touch_pad::Touch, size: (f32, f32), safe: [f32; 4], frame_scale: f32) -> bool {
+    use crate::touch_pad::Phase;
+    let mut e = HUD_EDITOR.lock().unwrap_or_else(|p| p.into_inner());
+    hud_layout_load(&mut e);
+    if e.captured == Some(touch.id) && touch.phase != Phase::Down {
+        if touch.phase == Phase::Up || touch.phase == Phase::Cancel {
+            e.captured = None;
+            e.drag = None;
+        }
+        if !e.active { return true; }
+    }
+    let unit = frame_scale.max(0.1);
+    let at = [(touch.at.0 - safe[0]) / unit, (touch.at.1 - safe[1]) / unit];
+    if !e.active {
+        if touch.phase == Phase::Down && inside(e.buttons[4], at) {
+            e.active = true;
+            e.captured = Some(touch.id);
+            e.selected = None;
+            return true;
+        }
+        return false;
+    }
+    if touch.phase == Phase::Down {
+        e.captured = Some(touch.id);
+        if inside(e.buttons[0], at) {
+            if let Err(err) = hud_layout_save(e.layout) { println!("hud: {err}"); }
+        } else if inside(e.buttons[1], at) {
+            e.layout = HudLayout::default();
+            e.selected = None;
+            if let Err(err) = hud_layout_save(e.layout) { println!("hud: {err}"); }
+        } else if inside(e.buttons[2], at) {
+            if let Some(i) = e.selected { e.layout.parts[i].scale = e.layout.parts[i].scale.saturating_sub(10).max(50); }
+        } else if inside(e.buttons[3], at) {
+            if let Some(i) = e.selected { e.layout.parts[i].scale = e.layout.parts[i].scale.saturating_add(10).min(200); }
+        } else if inside(e.buttons[4], at) {
+            e.active = false;
+            e.selected = None;
+            e.drag = None;
+        } else if let Some(i) = e.hitboxes.iter().position(|b| b.is_some_and(|b| inside(b, at))) {
+            e.selected = Some(i);
+            e.drag = Some((touch.id, at, e.layout.parts[i]));
+        } else {
+            e.selected = None;
+            e.drag = None;
+        }
+        return true;
+    }
+    if touch.phase == Phase::Move {
+        if let Some((id, start, original)) = e.drag && id == touch.id && let Some(index) = e.selected {
+            let s = e.layout_scale.max(0.1);
+            let dx = ((at[0] - start[0]) / s).round() as i16;
+            let dy = ((at[1] - start[1]) / s).round() as i16;
+            e.layout.parts[index].x = original.x.saturating_add(dx).clamp(-640, 640);
+            e.layout.parts[index].y = original.y.saturating_add(dy).clamp(-448, 448);
+        }
+    } else if touch.phase == Phase::Up || touch.phase == Phase::Cancel {
+        e.drag = None;
+    }
+    true
+}
+
+use std::sync::{LazyLock, Mutex};
+
 /// The layout's em: the concept's, a view's height over 45, at the disc's 448.
 const EM: f32 = 448.0 / 45.0;
 
@@ -690,6 +896,8 @@ struct Pen<'a> {
     corner: Corner,
     /// What every tint's alpha is multiplied by.
     alpha: f32,
+    layout: HudLayout,
+    transform: HudTransform,
 }
 
 impl Pen<'_> {
@@ -697,6 +905,16 @@ impl Pen<'_> {
     fn px(&self, (x, y): (f32, f32)) -> [f32; 2] {
         let [vx, vy, w, h] = self.view;
         let (lw, lh) = overlay::LAYOUT;
+        let factor = self.transform.scale as f32 / 100.0;
+        let (ax, ay) = match self.corner {
+            Corner::TopLeft => (0.0, 0.0),
+            Corner::TopRight => (lw, 0.0),
+            Corner::BottomLeft => (0.0, lh),
+            Corner::BottomRight => (lw, lh),
+            Corner::Bottom => (lw / 2.0, lh),
+        };
+        let x = ax + (x - ax) * factor + self.transform.x as f32;
+        let y = ay + (y - ay) * factor + self.transform.y as f32;
         let s = self.s;
         match self.corner {
             Corner::TopLeft => [vx + x * s, vy + y * s],
@@ -709,8 +927,13 @@ impl Pen<'_> {
 
     fn rect(&self, b: Box4) -> Box4 {
         let [x, y] = self.px((b[0], b[1]));
-        [x, y, b[2] * self.s, b[3] * self.s]
+        let s = self.effective_scale();
+        [x, y, b[2] * s, b[3] * s]
     }
+
+    fn apply(&mut self, part: usize) { self.transform = self.layout.parts[part]; }
+
+    fn effective_scale(&self) -> f32 { self.s * self.transform.scale as f32 / 100.0 }
 
     fn tint(&self, c: [u8; 4]) -> [u8; 4] {
         [c[0], c[1], c[2], (c[3] as f32 * self.alpha).round() as u8]
@@ -718,12 +941,12 @@ impl Pen<'_> {
 
     fn round(&mut self, b: Box4, radius: f32, top: [u8; 4], bottom: [u8; 4]) {
         let (t, bt) = (self.tint(top), self.tint(bottom));
-        ink::round(self.out, self.rect(b), radius * self.s, t, bt);
+        ink::round(self.out, self.rect(b), radius * self.effective_scale(), t, bt);
     }
 
     fn ring(&mut self, b: Box4, radius: f32, width: f32, colour: [u8; 4]) {
         let c = self.tint(colour);
-        ink::ring(self.out, self.rect(b), radius * self.s, width * self.s, c);
+        ink::ring(self.out, self.rect(b), radius * self.effective_scale(), width * self.effective_scale(), c);
     }
 
     fn disc(&mut self, (x, y): (f32, f32), r: f32, colour: [u8; 4]) {
@@ -736,13 +959,13 @@ impl Pen<'_> {
 
     fn bar(&mut self, a: (f32, f32), b: (f32, f32), half: f32, tip_half: f32, colour: [u8; 4]) {
         let c = self.tint(colour);
-        ink::bar(self.out, self.px(a), self.px(b), half * self.s, tip_half * self.s, c);
+        ink::bar(self.out, self.px(a), self.px(b), half * self.effective_scale(), tip_half * self.effective_scale(), c);
     }
 
     /// A stadium `b`, `left` up to `split` (layout x) and `right` from there.
     fn capsule(&mut self, b: Box4, left: [u8; 4], split: f32, right: [u8; 4]) {
         let [x, y, w, h] = self.rect(b);
-        let at = (split - b[0]) * self.s;
+        let at = (split - b[0]) * self.effective_scale();
         let (x0, y0, x1, y1) = (x - 1.0, y - 1.0, x + w + 1.0, y + h + 1.0);
         let shape = Shape::Capsule { size: [w, h], split: at, right: self.tint(right) };
         self.out.push(Sprite {
@@ -779,9 +1002,10 @@ impl Pen<'_> {
         let [px, py] = self.px((x, y));
         let image = self.base + (face == Face::Digits) as usize;
         let c = self.tint(colour);
-        Pen::face(face).text(self.out, image, w, text, px, py, size * self.s, slant, c);
-        let width = Pen::measure(face, w, text, size) * self.s;
-        [px, py - Pen::cap(face, size) * self.s, px + width, py]
+        let s = self.effective_scale();
+        Pen::face(face).text(self.out, image, w, text, px, py, size * s, slant, c);
+        let width = Pen::measure(face, w, text, size) * s;
+        [px, py - Pen::cap(face, size) * s, px + width, py]
     }
 
     /// [`Pen::text`] ringed in `edge` `by` layout pixels: the concept's text-shadow outline.
@@ -835,21 +1059,27 @@ pub fn sprites(out: &mut Vec<Sprite>, base: usize, view: [f32; 4], shown: &Shown
 #[allow(clippy::too_many_arguments)]
 pub fn sprites_clear_of(out: &mut Vec<Sprite>, base: usize, view: [f32; 4], pad: Option<Room>, shown: &Shown, tracker: &Tracker, now: Instant) -> Drawn {
     let s = scale_of(view[2], view[3], shown.scale);
-    let mut pen = Pen { out, view, s, base, corner: Corner::TopLeft, alpha: 1.0 };
+    let layout = hud_layout_now();
+    let mut pen = Pen { out, view, s, base, corner: Corner::TopLeft, alpha: 1.0, layout, transform: HudTransform::NORMAL };
     let mut drawn = Drawn { scale: s, ..Drawn::default() };
+    let mut hitboxes = [None; HUD_PARTS];
     if shown.minimap {
         if let Some(room) = pad {
             pen.view = right_of_the_stick(view, extent(&pen, |p, d| radar(p, shown, d)), room);
         }
+        let from = out.len();
         radar(&mut pen, shown, &mut drawn);
+        hitboxes[RADAR_PART] = sprite_bounds(&out[from..]);
         pen.view = view;
     }
+    let from = out.len();
     score(&mut pen, shown, tracker, now, &mut drawn);
+    hitboxes[SCORE_PART] = sprite_bounds(&out[from..]);
     let mut below = None;
     if let Some(room) = pad {
         let meters = |k: f32| {
             let mut aside = Vec::new();
-            let at = Pen { out: &mut aside, view, s: s * k, base, corner: Corner::TopLeft, alpha: 1.0 };
+            let at = Pen { out: &mut aside, view, s: s * k, base, corner: Corner::TopLeft, alpha: 1.0, layout, transform: HudTransform::NORMAL };
             extent(&at, |p, d| speedometer(p, shown, d))
         };
         let line = fps_line(room.frame, shown.scale);
@@ -859,13 +1089,25 @@ pub fn sprites_clear_of(out: &mut Vec<Sprite>, base: usize, view: [f32; 4], pad:
         }
     }
     speedometer(&mut pen, shown, &mut drawn);
-    (pen.view, pen.s) = (view, s);
+    hitboxes[PRELOAD_PART] = drawn.meter;
+    hitboxes[SPEED_PART] = drawn.speed.map(|l| l.rect).or_else(|| drawn.dial.map(|(at, _, _)| {
+        let r = 100.0 * s * layout.parts[SPEED_PART].scale as f32 / 100.0;
+        [at[0] - r, at[1] - r, 2.0 * r, 2.0 * r]
+    }));
+    (pen.view, pen.s, pen.transform) = (view, s, HudTransform::NORMAL);
+    let from = out.len();
     prompts(&mut pen, shown, &mut drawn);
+    hitboxes[PROMPTS_PART] = sprite_bounds(&out[from..]);
+    let from = out.len();
     top_right(&mut pen, shown, tracker, now, below, &mut drawn);
+    hitboxes[INFO_PART] = sprite_bounds(&out[from..]);
     if let Some(e) = &shown.event {
+        let from = out.len();
         event(&mut pen, e, tracker, now, &mut drawn);
+        hitboxes[EVENT_PART] = sprite_bounds(&out[from..]);
     }
     if let Some(r) = &shown.race {
+        let from = out.len();
         race(&mut pen, r, &mut drawn);
         if let Some((f, t)) = tracker.race_flag(now) {
             flag(&mut pen, f, t, &mut drawn);
@@ -873,11 +1115,15 @@ pub fn sprites_clear_of(out: &mut Vec<Sprite>, base: usize, view: [f32; 4], pad:
         if let Some(up) = r.board {
             board(&mut pen, up, &mut drawn);
         }
+        hitboxes[RACE_PART] = sprite_bounds(&out[from..]);
     }
     if let Some(p) = tracker.popup(now) {
+        let from = out.len();
         let lines = trick(&mut pen, &p);
         drawn.trick = Some((p, lines));
+        hitboxes[TRICK_PART] = sprite_bounds(&out[from..]);
     }
+    editor_overlay(out, base, view, s, hitboxes);
     drawn
 }
 
@@ -894,7 +1140,7 @@ pub fn draw(frame: &mut Frame, shown: &Shown, tracker: &Tracker, now: Instant) -
 /// sprites, drawn aside and thrown away.
 fn extent(pen: &Pen, part: impl FnOnce(&mut Pen, &mut Drawn)) -> Option<[f32; 4]> {
     let mut aside = Vec::new();
-    let mut p = Pen { out: &mut aside, view: pen.view, s: pen.s, base: pen.base, corner: pen.corner, alpha: pen.alpha };
+    let mut p = Pen { out: &mut aside, view: pen.view, s: pen.s, base: pen.base, corner: pen.corner, alpha: pen.alpha, layout: pen.layout, transform: pen.transform };
     part(&mut p, &mut Drawn::default());
     let corners = aside.iter().flat_map(|s| s.corners);
     corners.fold(None, |b, [x, y]| match b {
@@ -946,6 +1192,7 @@ fn right_of_the_stick(view: [f32; 4], drawn: Option<[f32; 4]>, room: Room) -> [f
 /// on a bank; under it MODIFIED and the rider's tag.
 fn score(pen: &mut Pen, shown: &Shown, tracker: &Tracker, now: Instant, drawn: &mut Drawn) {
     pen.corner = Corner::TopLeft;
+    pen.apply(SCORE_PART);
     let [x, y, _, h] = SCORE_BAR;
     pen.capsule(SCORE_BAR, shade(0x80), SCORE_LABEL_END, shade(0x66));
     let mid = y + h / 2.0;
@@ -990,6 +1237,7 @@ const EVENT_AT: (f32, f32) = (320.0, 25.0);
 /// event's points and the freeride total.
 fn event(pen: &mut Pen, e: &EventShown, tracker: &Tracker, now: Instant, drawn: &mut Drawn) {
     pen.corner = Corner::TopLeft;
+    pen.apply(EVENT_PART);
     let (cx, top) = EVENT_AT;
     let centred = |pen: &mut Pen, text: &str, y: f32, size: f32, colour: [u8; 4], drawn: &mut Drawn| {
         let w = Pen::measure(Face::Words, Weight::Heavy, text, size);
@@ -1029,6 +1277,7 @@ fn event(pen: &mut Pen, e: &EventShown, tracker: &Tracker, now: Instant, drawn: 
 /// a dark pill.
 fn race(pen: &mut Pen, r: &RaceShown, drawn: &mut Drawn) {
     pen.corner = Corner::TopLeft;
+    pen.apply(RACE_PART);
     let (cx, top) = EVENT_AT;
     let size = 1.1 * EM;
     let gap = 1.6 * EM;
@@ -1060,6 +1309,7 @@ const FLAG_SWING: f32 = 1.44;
 /// PCSX2's frames, not off the movies.
 fn flag(pen: &mut Pen, f: RaceFlag, t: f32, drawn: &mut Drawn) {
     pen.corner = Corner::TopLeft;
+    pen.apply(RACE_PART);
     let phase = TAU * t / FLAG_SWING;
     let lean = 0.35 * phase.sin();
     let (fx, fy) = FLAG_FOOT;
@@ -1142,12 +1392,13 @@ pub fn board_look(up: f32) -> Option<(f32, f32, f32)> {
 fn board(pen: &mut Pen, up: f32, drawn: &mut Drawn) {
     let Some((scale, alpha, turn)) = board_look(up) else { return };
     pen.corner = Corner::TopLeft;
+    pen.apply(RACE_PART);
     // The art at full size, in the icon's 128 pixels from its corner, then grown and turned about
     // the icon's middle.
     let (cx, cy) = BOARD_AT;
     let (ix, iy) = (cx - 64.0, cy - 64.0);
     let mut art = Vec::new();
-    let mut at = Pen { out: &mut art, view: pen.view, s: pen.s, base: pen.base, corner: Corner::TopLeft, alpha: pen.alpha * alpha };
+    let mut at = Pen { out: &mut art, view: pen.view, s: pen.s, base: pen.base, corner: Corner::TopLeft, alpha: pen.alpha * alpha, layout: pen.layout, transform: pen.transform };
     let card = [ix + 24.0, iy + 1.0, 80.0, 101.0];
     at.round(card, 4.5, [206, 206, 206, 255], [172, 172, 172, 255]);
     at.ring(card, 4.5, 0.8, [128, 128, 128, 255]);
@@ -1199,6 +1450,7 @@ fn mix(a: [u8; 4], b: [u8; 4], k: f32) -> [u8; 4] {
 /// fading.
 fn trick(pen: &mut Pen, p: &Popup) -> Vec<Line> {
     pen.corner = Corner::Bottom;
+    pen.apply(TRICK_PART);
     pen.alpha = p.alpha;
     let (cx, cy) = TRICK_AT;
     // The names, the latest three folded entries, shrunk to fit across.
@@ -1262,6 +1514,7 @@ fn trick(pen: &mut Pen, p: &Popup) -> Vec<Line> {
 /// standing right of either, filling orange from the bottom with the charge (V53).
 fn speedometer(pen: &mut Pen, shown: &Shown, drawn: &mut Drawn) {
     pen.corner = Corner::BottomRight;
+    pen.apply(PRELOAD_PART);
     let g = shown.gauges;
     let ((right, _), (mx, my)) = overlay::Place::Full.speedometer();
     let (mw, mh) = (20.0, 85.0);
@@ -1281,6 +1534,7 @@ fn speedometer(pen: &mut Pen, shown: &Shown, drawn: &mut Drawn) {
         drawn.meter = Some(pen.rect(b));
         drawn.preload = Some(fill);
     }
+    pen.apply(SPEED_PART);
     if g.speedometer == Speedometer::Analog {
         dial(pen, shown, drawn);
         return;
@@ -1340,6 +1594,7 @@ fn dial(pen: &mut Pen, shown: &Shown, drawn: &mut Drawn) {
 /// game's red — and the player's arrow fixed pointing up. Anything held to the rim is a chevron.
 fn radar(pen: &mut Pen, shown: &Shown, drawn: &mut Drawn) {
     pen.corner = Corner::BottomLeft;
+    pen.apply(RADAR_PART);
     pen.disc(RADAR, RADAR_R, shade(140));
     let turn = overlay::radar_turn(shown.forward);
     for k in 0..4 {
@@ -1582,6 +1837,7 @@ fn circle_button(pen: &mut Pen, at: (f32, f32), d: f32) {
 /// Circle Accept pill (P103), and a challenge's start held on Circle with a ring filling.
 fn prompts(pen: &mut Pen, shown: &Shown, drawn: &mut Drawn) {
     pen.corner = Corner::Bottom;
+    pen.apply(PROMPTS_PART);
     let pad = 0.3 * EM;
     let act = 0.85 * EM;
     let btn = 1.6 * act;
@@ -1679,6 +1935,7 @@ fn act_pill(pen: &mut Pen, buttons: &Buttons, x: f32, mid: f32, words: &str, hol
 /// `below`, a frame y the column starts under: the meters', moved up here for the touch pad (P304).
 fn top_right(pen: &mut Pen, shown: &Shown, tracker: &Tracker, now: Instant, below: Option<f32>, drawn: &mut Drawn) {
     pen.corner = Corner::TopRight;
+    pen.apply(INFO_PART);
     let (right, mut top) = TOP_RIGHT;
     if let Some(y) = below {
         top = top.max((y - pen.view[1]) / pen.s + 0.7 * EM);
@@ -1743,7 +2000,7 @@ fn cross_button(pen: &mut Pen, at: (f32, f32), d: f32) {
 /// from `base`, at the HUD scale `scale`, its Cross in `buttons`' style.
 pub fn join_sprites(out: &mut Vec<Sprite>, base: usize, view: [f32; 4], scale: f32, buttons: &Buttons) -> Line {
     let s = scale_of(view[2], view[3], scale);
-    let mut pen = Pen { out, view, s, base, corner: Corner::TopRight, alpha: 1.0 };
+    let mut pen = Pen { out, view, s, base, corner: Corner::TopRight, alpha: 1.0, layout: HudLayout::default(), transform: HudTransform::NORMAL };
     let (right, top) = TOP_RIGHT;
     join_cue(&mut pen, buttons, right, top)
 }
