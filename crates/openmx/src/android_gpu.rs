@@ -74,6 +74,8 @@ struct State {
     /// besides the back callback by 16.
     backs: u32,
     started: Instant,
+    safe: [f32; 4],
+    frame_scale: f32,
 }
 
 impl State {
@@ -139,8 +141,16 @@ impl ApplicationHandler for State {
                     TouchPhase::Cancelled => Phase::Cancel,
                 };
                 let touch = Touch { id: t.id, phase, at: (t.location.x as f32, t.location.y as f32) };
-                let now = self.started.elapsed().as_secs_f32();
-                TOUCH.lock().unwrap_or_else(|e| e.into_inner()).touch(touch, now, &mut self.clicks);
+                let was_editing = crate::ride_hud::editor_active();
+                let consumed = crate::ride_hud::editor_touch(touch);
+                let editing = crate::ride_hud::editor_active();
+                if editing != was_editing {
+                    TOUCH.lock().unwrap_or_else(|e| e.into_inner()).reset();
+                }
+                if !consumed {
+                    let now = self.started.elapsed().as_secs_f32();
+                    TOUCH.lock().unwrap_or_else(|e| e.into_inner()).touch(touch, now, &mut self.clicks);
+                }
             }
             WindowEvent::KeyboardInput { event, .. }
                 if event.state.is_pressed()
@@ -189,6 +199,8 @@ fn host() -> Result<Host, String> {
         clicks: Vec::new(),
         backs: 0,
         started: Instant::now(),
+        safe: [0.0; 4],
+        frame_scale: 1.0,
     };
     Ok(Host { events, state })
 }
@@ -397,6 +409,9 @@ impl GpuWindow {
             println!("android: back: {keys} key, {called} callback; read from the {}", if by_callback { "callback" } else { "key" });
         }
         self.safe = kept_insets(self.insets, stretch);
+        host.state.safe = self.safe.map(|v| v as f32);
+        host.state.frame_scale = self.scale.max(1) as f32;
+        crate::ride_hud::editor_input_area(host.state.safe, host.state.frame_scale);
         let [l, t, r, b] = self.safe;
         self.clicks = clicks.into_iter().map(|(x, y)| (x - l as i32, y - t as i32)).collect();
         self.width = size.0.saturating_sub(l + r).max(1) as usize;
@@ -498,7 +513,7 @@ impl GpuWindow {
         self.renderer.bleed = bleed;
         let out = draw(&mut self.renderer, &target);
         self.renderer.bleed = [0; 4];
-        let sprites = TOUCH.lock().unwrap_or_else(|e| e.into_inner()).sprites(0);
+        let sprites = if crate::ride_hud::editor_active() { Vec::new() } else { TOUCH.lock().unwrap_or_else(|e| e.into_inner()).sprites(0) };
         if !sprites.is_empty() {
             let layer = self.layer.get_or_insert_with(|| self.renderer.layer(&[&crate::menu::ink::ink().atlas]));
             let whole = Target { view: &view, size, frame: [0, 0, size.0, size.1], scale: 1 };
