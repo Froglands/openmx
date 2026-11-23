@@ -46,6 +46,7 @@ const EVENT_PART: usize = 6;
 const RACE_PART: usize = 7;
 const TRICK_PART: usize = 8;
 const HUD_PART_NAMES: [&str; HUD_PARTS] = ["Score", "Radar", "Speed", "Preload", "Prompts", "Info", "Event", "Race", "Trick"];
+const HUD_PART_TAGS: [&str; HUD_PARTS] = ["SCR", "RAD", "SPD", "PRE", "BTN", "INFO", "EVT", "RACE", "TRK"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct HudTransform {
@@ -78,6 +79,7 @@ struct HudEditor {
     hitboxes: [Option<Box4>; HUD_PARTS],
     /// Save, Reset, Size -, Size +, Done; Edit HUD while closed.
     buttons: [Box4; 5],
+    part_buttons: [Box4; HUD_PARTS],
     view: [f32; 4],
     layout_scale: f32,
     input_safe: [f32; 4],
@@ -129,17 +131,36 @@ fn inside(b: Box4, p: [f32; 2]) -> bool {
     p[0] >= b[0] && p[0] <= b[0] + b[2] && p[1] >= b[1] && p[1] <= b[1] + b[3]
 }
 
-fn editor_button(out: &mut Vec<Sprite>, base: usize, rect: Box4, label: &str) {
-    let fill = [12, 14, 18, 220];
+fn editor_button(out: &mut Vec<Sprite>, base: usize, rect: Box4, label: &str, selected: bool, size: f32) {
+    let fill = if selected { [112, 65, 18, 235] } else { [12, 14, 18, 220] };
     ink::round(out, rect, 7.0, fill, fill);
     ink::ring(out, rect, 7.0, 1.5, [245, 245, 245, 220]);
     let face = ink::ink();
-    let size = 14.0;
     let width = face.measure(Weight::Heavy, label, size);
     let cx = rect[0] + rect[2] / 2.0;
     let cy = rect[1] + rect[3] / 2.0;
     let baseline = cy + size * (face.ascent - face.descent.abs()) / 2.0;
     face.text(out, base, Weight::Heavy, label, cx - width / 2.0, baseline, size, 0.0, WHITE);
+}
+
+fn fallback_hitbox(part: usize, view: [f32; 4], scale: f32, base: usize, layout: HudLayout) -> Box4 {
+    let (corner, rect) = match part {
+        SCORE_PART => (Corner::TopLeft, [SCORE_BAR[0] - 8.0, 15.0, 270.0, 86.0]),
+        RADAR_PART => (Corner::BottomLeft, [RADAR.0 - RADAR_R - 14.0, RADAR.1 - RADAR_R - 14.0, 2.0 * (RADAR_R + 14.0), 2.0 * (RADAR_R + 14.0)]),
+        SPEED_PART => (Corner::BottomRight, [PIVOT.0 - 100.0, PIVOT.1 - 105.0, 200.0, 210.0]),
+        PRELOAD_PART => {
+            let ((_, _), (x, y)) = overlay::Place::Full.speedometer();
+            (Corner::BottomRight, [x, y, 20.0, 85.0])
+        }
+        PROMPTS_PART => (Corner::Bottom, [35.0, PROMPT_FOOT - 72.0, 570.0, 72.0]),
+        INFO_PART => (Corner::TopRight, [overlay::LAYOUT.0 - 220.0, 5.0, 215.0, 190.0]),
+        EVENT_PART => (Corner::TopLeft, [115.0, 15.0, 410.0, 170.0]),
+        RACE_PART => (Corner::TopLeft, [145.0, 15.0, 350.0, 190.0]),
+        _ => (Corner::Bottom, [65.0, TRICK_AT.1 - 60.0, 510.0, 115.0]),
+    };
+    let mut scratch = Vec::new();
+    let pen = Pen { out: &mut scratch, view, s: scale, base, corner, alpha: 1.0, layout, transform: layout.parts[part] };
+    pen.rect(rect)
 }
 
 fn editor_overlay(out: &mut Vec<Sprite>, base: usize, view: [f32; 4], scale: f32, hitboxes: [Option<Box4>; HUD_PARTS]) {
@@ -148,10 +169,15 @@ fn editor_overlay(out: &mut Vec<Sprite>, base: usize, view: [f32; 4], scale: f32
     e.hitboxes = hitboxes;
     e.view = view;
     e.layout_scale = scale.max(0.1);
+    for i in 0..HUD_PARTS {
+        if e.hitboxes[i].is_none() {
+            e.hitboxes[i] = Some(fallback_hitbox(i, view, scale, base, e.layout));
+        }
+    }
     if !e.active {
         let b = [view[0] + view[2] / 2.0 - 54.0, view[1] + 8.0, 108.0, 31.0];
         e.buttons[4] = b;
-        editor_button(out, base, b, "EDIT HUD");
+        editor_button(out, base, b, "EDIT HUD", false, 14.0);
         return;
     }
     let widths = [62.0, 62.0, 58.0, 58.0, 62.0];
@@ -163,8 +189,20 @@ fn editor_overlay(out: &mut Vec<Sprite>, base: usize, view: [f32; 4], scale: f32
     for i in 0..5 {
         let b = [x, y, widths[i], 32.0];
         e.buttons[i] = b;
-        editor_button(out, base, b, labels[i]);
+        editor_button(out, base, b, labels[i], false, 14.0);
         x += widths[i] + gap;
+    }
+    // Nine selector tabs make even temporary HUD elements (event/race/trick) editable.
+    let part_gap = 3.0;
+    let part_width = ((view[2] - 12.0 - part_gap * (HUD_PARTS as f32 - 1.0)) / HUD_PARTS as f32).max(22.0);
+    let part_total = part_width * HUD_PARTS as f32 + part_gap * (HUD_PARTS as f32 - 1.0);
+    let mut part_x = view[0] + (view[2] - part_total) / 2.0;
+    let part_y = view[1] + view[3] - 32.0;
+    for i in 0..HUD_PARTS {
+        let b = [part_x, part_y, part_width, 25.0];
+        e.part_buttons[i] = b;
+        editor_button(out, base, b, HUD_PART_TAGS[i], e.selected == Some(i), 10.5);
+        part_x += part_width + part_gap;
     }
     if let Some(index) = e.selected {
         if let Some([x, y, w, h]) = e.hitboxes[index] {
@@ -227,6 +265,9 @@ pub fn editor_touch(touch: crate::touch_pad::Touch) -> bool {
         } else if inside(e.buttons[4], at) {
             e.active = false;
             e.selected = None;
+            e.drag = None;
+        } else if let Some(i) = e.part_buttons.iter().position(|b| inside(*b, at)) {
+            e.selected = Some(i);
             e.drag = None;
         } else if let Some(i) = e.hitboxes.iter().position(|b| b.is_some_and(|b| inside(b, at))) {
             e.selected = Some(i);
@@ -1137,6 +1178,7 @@ pub fn sprites_clear_of(out: &mut Vec<Sprite>, base: usize, view: [f32; 4], pad:
         drawn.trick = Some((p, lines));
         hitboxes[TRICK_PART] = sprite_bounds(&pen.out[from..]);
     }
+    #[cfg(target_os = "android")]
     editor_overlay(&mut *pen.out, base, view, s, hitboxes);
     drawn
 }
