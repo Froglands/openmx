@@ -4834,6 +4834,12 @@ impl Menu {
         self.close_sides();
     }
 
+    /// Close the settings/pause stack and enter the Android touch HUD editor over the live ride.
+    pub(super) fn open_hud_editor(&mut self) {
+        self.stack.clear();
+        crate::ride_hud::editor_open();
+    }
+
     /// The pause over a ride, 1P's.
     pub fn pause(&mut self) {
         self.pause_for(0);
