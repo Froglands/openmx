@@ -74,8 +74,6 @@ struct State {
     /// besides the back callback by 16.
     backs: u32,
     started: Instant,
-    safe: [f32; 4],
-    frame_scale: f32,
 }
 
 impl State {
@@ -199,8 +197,6 @@ fn host() -> Result<Host, String> {
         clicks: Vec::new(),
         backs: 0,
         started: Instant::now(),
-        safe: [0.0; 4],
-        frame_scale: 1.0,
     };
     Ok(Host { events, state })
 }
@@ -409,9 +405,6 @@ impl GpuWindow {
             println!("android: back: {keys} key, {called} callback; read from the {}", if by_callback { "callback" } else { "key" });
         }
         self.safe = kept_insets(self.insets, stretch);
-        host.state.safe = self.safe.map(|v| v as f32);
-        host.state.frame_scale = self.scale.max(1) as f32;
-        crate::ride_hud::editor_input_area(host.state.safe, host.state.frame_scale);
         let [l, t, r, b] = self.safe;
         self.clicks = clicks.into_iter().map(|(x, y)| (x - l as i32, y - t as i32)).collect();
         self.width = size.0.saturating_sub(l + r).max(1) as usize;
@@ -423,6 +416,7 @@ impl GpuWindow {
         drop(touch);
         // The ride HUD stands clear of the touch pad (P304), as on the iPhone.
         crate::menu::touch_room::set((shown && !crate::ride_hud::editor_active()).then_some((self.width, self.height)));
+        crate::ride_hud::editor_input_area(self.safe.map(|v| v as f32), self.scale.max(1) as f32);
     }
 
     pub fn closed(&self) -> bool {
